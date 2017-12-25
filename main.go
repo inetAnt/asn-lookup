@@ -4,10 +4,28 @@ import (
 	"fmt"
 	"github.com/inetant/asn-lookup/whois"
 	"gopkg.in/mgo.v2"
+	"gopkg.in/mgo.v2/bson"
 	"net"
 	"regexp"
 	"strings"
+	"sync"
+	"time"
 )
+
+func worker(id int, jobs <-chan string, c *mgo.Collection) {
+	for j := range jobs {
+		fmt.Println("worker", id, "on ip", j)
+		var name string
+		names, err := net.LookupAddr(j)
+		if err != nil {
+			name = "null"
+		} else {
+			name = names[0]
+		}
+		UpdateReverse(c, j, name)
+		time.Sleep(100 * time.Millisecond)
+	}
+}
 
 func GetIPVersion(ip *net.IP) (version int) {
 	if net.IP.To4(*ip) != nil {
@@ -19,22 +37,52 @@ func GetIPVersion(ip *net.IP) (version int) {
 	}
 }
 
-func main() {
-	session, err := mgo.Dial("192.168.1.25")
+func UpdateReverse(c *mgo.Collection, addr string, reverse string) {
+	res := IPAddr{}
+	err := c.Find(bson.M{"address": addr}).One(&res)
 	if err != nil {
-		panic(err)
+		fmt.Println(err.Error())
 	}
-	defer session.Close()
-	// Optional. Switch the session to a monotonic behavior.
-	session.SetMode(mgo.Monotonic, true)
+	res.Reverse = reverse
+	err = c.Update(IPAddr{Address: res.Address}, res)
+	if err != nil {
+		fmt.Println(err)
+	}
+}
 
-	c := session.DB("asn-lookup").C("asns")
+func AddIPsJobsDB(as *ASN, networks []*net.IPNet, jobs chan<- string, c *mgo.Collection) {
+	// analyse all our subnets, add to db with no reverse, add a job to our jobs queue
+	for _, subnet := range networks {
+		fmt.Println(subnet)
+		hostmask := Hostmask(subnet.Mask)
+		ips := IPSubnetHosts(&subnet.IP, hostmask)
+		for _, v := range ips {
+			addr := v.String() // IP address from the subnet
+			jobs <- addr
+			_ = c.Insert(IPAddr{
+				AsnId:   as.Id,
+				Address: addr,
+				Reverse: "",
+			})
+		}
+	}
+}
 
-	as, _ := whois.GetInfo("whois.radb.net", 16276)
-	_ = c.Insert(as)
-	fmt.Println(as.Name)
+func main() {
 
-	subnets, _ := whois.GetSubnets("whois.radb.net", as.Number)
+	s, c, _ := Collection("192.168.1.25")
+	defer s.Close()
+
+	as_data, _ := whois.GetInfo("whois.radb.net", 46489)
+	_, err := c.Upsert(ASN{Number: as_data.Number}, as_data)
+	if err != nil {
+		fmt.Println(err)
+	}
+
+	as := ASN{}
+	_ = c.Find(bson.M{"number": 46489}).One(&as)
+
+	subnets, _ := whois.GetSubnets("whois.radb.net", as_data.Number)
 	lines := strings.Split(subnets, "\n")
 
 	networks := make([]*net.IPNet, 0) // List of all the networks (CIDRs) owned
@@ -51,14 +99,19 @@ func main() {
 			}
 		}
 	}
+	fmt.Println(networks)
 
-	for _, subnet := range networks {
-		hostmask := Hostmask(subnet.Mask)
-		ips := IPSubnetHosts(&subnet.IP, hostmask)
-		for _, v := range ips {
-			fmt.Println(v)
-		}
-		break
+	var wg sync.WaitGroup
+	jobs := make(chan string, 1024)
+
+	for w := 1; w <= 100; w++ {
+		fmt.Println("go worker", w)
+		go worker(w, jobs, c)
+		wg.Add(1)
 	}
+
+	go AddIPsJobsDB(&as, networks, jobs, c)
+
+	wg.Wait()
 
 }

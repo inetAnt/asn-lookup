@@ -1,44 +1,49 @@
 package main
 
 import (
-	"fmt"
 	"gopkg.in/mgo.v2"
 	"gopkg.in/mgo.v2/bson"
-	"log"
 )
 
-type Person struct {
-	Name  string
-	Phone string
-}
-
 type ASN struct {
-	Number int
-	Name   string
+	Id     bson.ObjectId `bson:"_id,omitempty"`
+	Number int           `bson:"number"`
+	Name   string        `bson:"name"`
+	Descr  string        `bson:"descr"`
 }
 
 type IPAddr struct {
-	Address string
-	Reverse string
+	AsnId   bson.ObjectId `bson:"asn_id,omitempty"`
+	Address string        `bson:"address"`
+	Reverse string        `bson:"reverse"`
 }
 
-func main() {
-	session, err := mgo.Dial("192.168.1.25")
+func Collection(server string) (session *mgo.Session, c *mgo.Collection, err error) {
+	session, err = mgo.Dial(server)
 	if err != nil {
 		panic(err)
 	}
-	defer session.Close()
 
 	// Optional. Switch the session to a monotonic behavior.
 	session.SetMode(mgo.Monotonic, true)
 
-	c := session.DB("asn-lookup").C("asns")
+	c = session.DB("asn-lookup").C("asns")
 	c.EnsureIndex(mgo.Index{
-		Key:      []string{"number", "name"},
+		Key:      []string{"number"},
 		Unique:   true,
 		DropDups: true,
+		Sparse:   true,
 	})
+	c.EnsureIndex(mgo.Index{
+		Key:      []string{"address"},
+		Unique:   true,
+		DropDups: true,
+		Sparse:   true,
+	})
+	return session, c, err
+}
 
+/*
 	result := ASN{}
 	err = c.Find(bson.M{"number": 15169}).One(&result)
 	if err != nil {
@@ -46,4 +51,4 @@ func main() {
 	}
 
 	fmt.Println("ASN:", result.Name)
-}
+*/

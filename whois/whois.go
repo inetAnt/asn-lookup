@@ -24,7 +24,6 @@ func Connect(server string) (w *WhoisClient, err error) {
 	if err != nil {
 		fmt.Println(err.Error())
 	}
-	fmt.Print(addr)
 
 	conn, err := net.DialTCP("tcp", nil, addr)
 	if err != nil {
